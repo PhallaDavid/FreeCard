@@ -21,8 +21,8 @@ import {
 } from "@/components/social-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { auth, db, isFirebaseConfigured } from "@/lib/firebase";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { auth, db, isFirebaseConfigured, getPortfolioByOwnerUid } from "@/lib/firebase";
+import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 
 export default function RegisterPage() {
@@ -100,6 +100,11 @@ export default function RegisterPage() {
 
     if (!/\S+@\S+\.\S+/.test(email)) {
       setError("Please enter a valid email address.");
+      return;
+    }
+
+    if (!email.toLowerCase().endsWith("@gmail.com")) {
+      setError("Registration and login are restricted to @gmail.com email addresses only.");
       return;
     }
 
@@ -205,6 +210,121 @@ export default function RegisterPage() {
     };
     
     handleRegister();
+  };
+
+  const handleGoogleSignup = async () => {
+    setError("");
+    setIsLoading(true);
+    if (isFirebaseConfigured && auth && db) {
+      try {
+        const provider = new GoogleAuthProvider();
+        const result = await signInWithPopup(auth, provider);
+        const user = result.user;
+
+        if (!user.email || !user.email.toLowerCase().endsWith("@gmail.com")) {
+          await auth.signOut();
+          setError("Registration and login are restricted to @gmail.com email addresses only.");
+          setIsLoading(false);
+          return;
+        }
+
+        let displayName = user.displayName || "Google Creator";
+        let portfolioUsername = "";
+
+        // Check if this Google account already has a portfolio (returning user)
+        const existingPortfolio = await getPortfolioByOwnerUid(user.uid);
+
+        if (existingPortfolio) {
+          // Returning user — load their existing data
+          portfolioUsername = existingPortfolio.username;
+          displayName = existingPortfolio.displayName || displayName;
+          localStorage.setItem("portfolio_data", JSON.stringify(existingPortfolio));
+        } else {
+          // New user — generate a unique username and create their profile
+          const baseName = (user.displayName || user.email!.split("@")[0])
+            .toLowerCase()
+            .replace(/[^a-zA-Z0-9_]/g, "");
+
+          let candidate = baseName.substring(0, 10);
+          if (candidate.length < 3) candidate = "user_" + Math.floor(Math.random() * 100);
+
+          // Try to verify username uniqueness; fall back to a random suffix if offline
+          portfolioUsername = candidate;
+          try {
+            let isTaken = true;
+            let attempt = 0;
+            while (isTaken && attempt < 5) {
+              const checkRef = doc(db, "portfolios", portfolioUsername);
+              const checkSnap = await getDoc(checkRef);
+              if (!checkSnap.exists()) {
+                isTaken = false;
+              } else {
+                attempt++;
+                portfolioUsername = candidate + Math.floor(Math.random() * 100);
+              }
+            }
+          } catch {
+            // Offline — append a random suffix to minimize collision risk
+            portfolioUsername = candidate + "_" + Math.floor(Math.random() * 9000 + 1000);
+          }
+
+          // Create default portfolio document immediately after signup
+          const defaultPortfolio = {
+            username: portfolioUsername,
+            displayName,
+            bio: "Full Stack Engineer & Digital Creator 🚀 Designing the future of link interfaces.",
+            avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${displayName}`,
+            themeId: "glassmorphism",
+            fontId: "font-sans",
+            buttonShapeId: "rounded-full",
+            layoutId: "classic",
+            hiddenSocials: [],
+            bioAnimationId: "typewriter",
+            ownerUid: user.uid,
+            socials: { email: user.email },
+            links: [
+              {
+                id: "1",
+                title: "My Personal Website 🌐",
+                url: "https://example.com",
+                visible: true,
+                icon: "globe",
+              },
+            ],
+          };
+
+          // Save to localStorage immediately (works offline)
+          localStorage.setItem("portfolio_data", JSON.stringify(defaultPortfolio));
+          // Try Firestore — if offline, persistence layer will sync when back online
+          try {
+            await setDoc(doc(db, "portfolios", portfolioUsername), defaultPortfolio);
+          } catch {
+            console.warn("Firestore write deferred (offline) — data saved to localStorage");
+          }
+        }
+
+        localStorage.setItem("userLoggedIn", "true");
+        localStorage.setItem("userEmail", user.email!);
+        localStorage.setItem("username", portfolioUsername);
+        localStorage.setItem("displayName", displayName);
+
+        router.push("/dashboard");
+      } catch (err: any) {
+        console.error("Google Sign-Up Error:", err);
+        setError(err.message || "Google Sign-Up failed. Please try again.");
+        setIsLoading(false);
+      }
+    } else {
+      // Mock mode
+      setTimeout(() => {
+        setIsLoading(false);
+        localStorage.setItem("userLoggedIn", "true");
+        localStorage.setItem("userEmail", "googleuser@gmail.com");
+        localStorage.setItem("username", "google_creator");
+        localStorage.setItem("displayName", "Google Creator Mock");
+        router.push("/dashboard");
+      }, 1000);
+    }
   };
 
   return (
@@ -420,7 +540,8 @@ export default function RegisterPage() {
               <GithubIcon className="size-3.5" />
               Sign up with Github
             </button>
-            <button
+             <button
+              onClick={handleGoogleSignup}
               className="h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-55 hover:text-zinc-950 dark:hover:bg-zinc-900 dark:hover:text-zinc-50 text-xs font-medium flex items-center justify-center gap-1.5 transition-all active:scale-[0.98]"
               disabled={isLoading}
             >

@@ -77,6 +77,11 @@ export default function DashboardPage() {
   const [appTheme, setAppTheme] = useState<"dark" | "light">("dark");
   const [previewDevice, setPreviewDevice] = useState<"iphone" | "pixel" | "watch" | "ipad" | "macbook">("iphone");
 
+  // Profile Details draft state — separate from main data to avoid saving on every keystroke
+  const [profileDraft, setProfileDraft] = useState({ displayName: "", avatarUrl: "", bio: "", bioAnimationId: "typewriter" });
+  const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const saveDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const getLinkIcon = (iconName?: string) => {
     switch (iconName) {
       case "globe":
@@ -186,22 +191,34 @@ export default function DashboardPage() {
         localStorage.setItem("portfolio_data", JSON.stringify(initialData));
       }
     }
-
-    // Load theme mode
-    const savedTheme = localStorage.getItem("theme_mode") as "dark" | "light" | null;
-    if (savedTheme) {
-      setAppTheme(savedTheme);
-    }
   }, [router]);
 
-  // Sync back to local storage and Firestore on modification
+  // Sync draft when data loads from Firebase/localStorage
+  useEffect(() => {
+    setProfileDraft({
+      displayName: data.displayName || "",
+      avatarUrl: data.avatarUrl || "",
+      bio: data.bio || "",
+      bioAnimationId: data.bioAnimationId || "typewriter",
+    });
+  }, [data.displayName, data.avatarUrl, data.bio, data.bioAnimationId]);
+
+  // Load theme mode
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("theme_mode") as "dark" | "light" | null;
+    if (savedTheme) setAppTheme(savedTheme);
+  }, []);
+
+
+
+  // Persist data to localStorage + Firestore (used for non-text changes: links, themes, socials)
   const updateData = async (newData: PortfolioData) => {
     setData(newData);
     setSaveStatus("Saving...");
-    
-    // Always mirror to local storage
+
+    // Always mirror to localStorage immediately
     localStorage.setItem("portfolio_data", JSON.stringify(newData));
-    
+
     try {
       if (isFirebaseConfigured) {
         await savePortfolio(newData.username, newData);
@@ -211,6 +228,35 @@ export default function DashboardPage() {
       console.error("Error saving updates to backend:", e);
       setSaveStatus("Ready");
     }
+  };
+
+  // Save profile details (called by Save button or debounce)
+  const saveProfile = async (draft: typeof profileDraft) => {
+    setProfileSaveStatus("saving");
+    const merged = { ...data, ...draft };
+    setData(merged);
+    localStorage.setItem("portfolio_data", JSON.stringify(merged));
+    try {
+      if (isFirebaseConfigured) {
+        await savePortfolio(merged.username, merged);
+      }
+      setProfileSaveStatus("saved");
+      setTimeout(() => setProfileSaveStatus("idle"), 2500);
+    } catch (e) {
+      console.error("Profile save failed:", e);
+      setProfileSaveStatus("error");
+    }
+  };
+
+  // Update profile draft locally; debounce the Firestore save by 1.5s
+  const handleProfileDraftChange = (key: keyof typeof profileDraft, value: string) => {
+    const updated = { ...profileDraft, [key]: value };
+    setProfileDraft(updated);
+    // Reflect instantly in preview
+    setData((prev) => ({ ...prev, [key]: value }));
+    // Clear existing debounce
+    if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+    saveDebounceRef.current = setTimeout(() => saveProfile(updated), 1500);
   };
 
   const handleThemeChange = (theme: "dark" | "light") => {
@@ -668,18 +714,47 @@ export default function DashboardPage() {
             <div className="space-y-6">
               {/* Profile Config */}
               <div className="rounded-xl border border-zinc-200/50 dark:border-zinc-800/50 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-5 shadow-sm space-y-4">
-                <h3 className="text-sm font-bold flex items-center gap-1.5">
-                  <User className="size-4 text-indigo-500" />
-                  Profile Details
-                </h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold flex items-center gap-1.5">
+                    <User className="size-4 text-indigo-500" />
+                    Profile Details
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    {profileSaveStatus === "saving" && (
+                      <span className="text-[10px] font-semibold text-zinc-400 animate-pulse uppercase tracking-wider">Saving…</span>
+                    )}
+                    {profileSaveStatus === "saved" && (
+                      <span className="text-[10px] font-semibold text-emerald-500 uppercase tracking-wider flex items-center gap-1">
+                        <Check className="size-3" /> Saved
+                      </span>
+                    )}
+                    {profileSaveStatus === "error" && (
+                      <span className="text-[10px] font-semibold text-rose-500 uppercase tracking-wider">Save failed</span>
+                    )}
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+                        saveProfile(profileDraft);
+                      }}
+                      disabled={profileSaveStatus === "saving"}
+                      className="h-7 px-3 text-xs bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 font-semibold rounded-lg hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50"
+                    >
+                      Save Profile
+                    </Button>
+                  </div>
+                </div>
                 <div className="flex flex-col sm:flex-row gap-4 items-center sm:items-start">
-                  {/* Image edit mockup */}
-                  <div className="relative group/avatar cursor-pointer">
+                  {/* Avatar preview */}
+                  <div className="relative group/avatar cursor-pointer shrink-0">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img 
-                      src={data.avatarUrl} 
-                      alt="Avatar" 
+                    <img
+                      src={profileDraft.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${profileDraft.displayName}`}
+                      alt="Avatar"
                       className="size-16 rounded-full object-cover border-2 border-zinc-200 dark:border-zinc-800"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = `https://api.dicebear.com/7.x/initials/svg?seed=${profileDraft.displayName}`;
+                      }}
                     />
                     <div className="absolute inset-0 bg-black/40 rounded-full flex items-center justify-center text-[10px] text-white opacity-0 group-hover/avatar:opacity-100 transition-opacity">
                       Change
@@ -692,8 +767,8 @@ export default function DashboardPage() {
                         <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Display Name</label>
                         <Input
                           type="text"
-                          value={data.displayName}
-                          onChange={(e) => updateData({ ...data, displayName: e.target.value })}
+                          value={profileDraft.displayName}
+                          onChange={(e) => handleProfileDraftChange("displayName", e.target.value)}
                           placeholder="Your Name"
                         />
                       </div>
@@ -701,17 +776,17 @@ export default function DashboardPage() {
                         <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Avatar Image URL</label>
                         <Input
                           type="text"
-                          value={data.avatarUrl}
-                          onChange={(e) => updateData({ ...data, avatarUrl: e.target.value })}
-                          placeholder="https://unsplash.com/..."
+                          value={profileDraft.avatarUrl}
+                          onChange={(e) => handleProfileDraftChange("avatarUrl", e.target.value)}
+                          placeholder="https://..."
                         />
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Bio Details</label>
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Bio</label>
                       <Textarea
-                        value={data.bio}
-                        onChange={(e) => updateData({ ...data, bio: e.target.value })}
+                        value={profileDraft.bio}
+                        onChange={(e) => handleProfileDraftChange("bio", e.target.value)}
                         rows={2}
                         className="resize-none leading-relaxed"
                         placeholder="Tell visitors about yourself..."
@@ -720,8 +795,13 @@ export default function DashboardPage() {
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Bio Entry Animation</label>
                       <Select
-                        value={data.bioAnimationId || "typewriter"}
-                        onValueChange={(val) => updateData({ ...data, bioAnimationId: val || undefined })}
+                        value={profileDraft.bioAnimationId || "typewriter"}
+                        onValueChange={(val) => {
+                          if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+                          const updated = { ...profileDraft, bioAnimationId: val || "typewriter" };
+                          setProfileDraft(updated);
+                          saveProfile(updated);
+                        }}
                       >
                         <SelectTrigger className="w-full h-8.5 text-xs">
                           <SelectValue placeholder="Choose entry animation" />
@@ -738,6 +818,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
+
 
               {/* Layout Selector */}
               <div className="rounded-xl border border-zinc-200/50 dark:border-zinc-800/50 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-5 shadow-sm space-y-4">

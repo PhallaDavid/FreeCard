@@ -9,6 +9,7 @@ import {
   DEFAULT_PORTFOLIO_DATA, 
   type PortfolioData 
 } from "@/lib/theme-presets";
+import { getPortfolioByUsername } from "@/lib/firebase";
 import { 
   ExternalLink, 
   Globe,
@@ -78,64 +79,59 @@ export default function PublicPortfolioPage({ params }: PageProps) {
   }, [data?.bio, data?.bioAnimationId]);
 
   useEffect(() => {
-    // Attempt to load current user data from localStorage
-    const localData = localStorage.getItem("portfolio_data");
-    if (localData) {
-      try {
-        const parsed: PortfolioData = JSON.parse(localData);
-        // If the route matches the customized username, use it
-        if (parsed.username.toLowerCase() === username) {
-          setData(parsed);
-          return;
-        }
-      } catch (e) {
-        console.error("Error parsing local portfolio data", e);
+    async function loadPortfolio() {
+      const dbPortfolio = await getPortfolioByUsername(username);
+      if (dbPortfolio) {
+        setData(dbPortfolio);
+        return;
       }
+
+      // Fallback: If navigating to "johndoe", use defaults
+      if (username === "johndoe" || username === "demo") {
+        setData(DEFAULT_PORTFOLIO_DATA);
+        return;
+      }
+
+      // Dynamically generate a nice portfolio if another username is visited
+      const dynamicData: PortfolioData = {
+        username: username,
+        displayName: username.charAt(0).toUpperCase() + username.slice(1),
+        bio: `Welcome to my profile hub! I am a passionate creator building cool things on the web. Follow my journeys below! ✨`,
+        avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${username}`,
+        themeId: THEME_PRESETS[Math.floor(Math.random() * THEME_PRESETS.length)].id,
+        fontId: "font-sans",
+        buttonShapeId: "rounded-full",
+        layoutId: "classic",
+        socials: {
+          github: `https://github.com/${username}`,
+          twitter: `https://twitter.com/${username}`,
+          email: `${username}@example.com`,
+        },
+        links: [
+          {
+            id: "1",
+            title: "💻 Visit My Projects Hub",
+            url: "https://github.com",
+            visible: true,
+          },
+          {
+            id: "2",
+            title: "☕ Buy Me a Coffee",
+            url: "https://buymeacoffee.com",
+            visible: true,
+          },
+          {
+            id: "3",
+            title: "📱 Follow Me on Socials",
+            url: "https://linktr.ee",
+            visible: true,
+          },
+        ],
+      };
+      setData(dynamicData);
     }
 
-    // Fallback: If navigating to "johndoe", use defaults
-    if (username === "johndoe" || username === "demo") {
-      setData(DEFAULT_PORTFOLIO_DATA);
-      return;
-    }
-
-    // Dynamically generate a nice portfolio if another username is visited
-    const dynamicData: PortfolioData = {
-      username: username,
-      displayName: username.charAt(0).toUpperCase() + username.slice(1),
-      bio: `Welcome to my profile hub! I am a passionate creator building cool things on the web. Follow my journeys below! ✨`,
-      avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${username}`,
-      themeId: THEME_PRESETS[Math.floor(Math.random() * THEME_PRESETS.length)].id,
-      fontId: "font-sans",
-      buttonShapeId: "rounded-full",
-      layoutId: "classic",
-      socials: {
-        github: `https://github.com/${username}`,
-        twitter: `https://twitter.com/${username}`,
-        email: `${username}@example.com`,
-      },
-      links: [
-        {
-          id: "1",
-          title: "💻 Visit My Projects Hub",
-          url: "https://github.com",
-          visible: true,
-        },
-        {
-          id: "2",
-          title: "☕ Buy Me a Coffee",
-          url: "https://buymeacoffee.com",
-          visible: true,
-        },
-        {
-          id: "3",
-          title: "📱 Follow Me on Socials",
-          url: "https://linktr.ee",
-          visible: true,
-        },
-      ],
-    };
-    setData(dynamicData);
+    loadPortfolio();
   }, [username]);
 
   if (!data) {

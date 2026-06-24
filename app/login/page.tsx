@@ -19,9 +19,9 @@ import {
 } from "@/components/social-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { auth, db, isFirebaseConfigured } from "@/lib/firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { auth, db, isFirebaseConfigured, getPortfolioByOwnerUid } from "@/lib/firebase";
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -45,6 +45,11 @@ export default function LoginPage() {
       return;
     }
 
+    if (!email.toLowerCase().endsWith("@gmail.com")) {
+      setError("Registration and login are restricted to @gmail.com email addresses only.");
+      return;
+    }
+
     setIsLoading(true);
     
     const handleLogin = async () => {
@@ -55,22 +60,18 @@ export default function LoginPage() {
           const user = userCredential.user;
 
           // 2. Fetch the corresponding portfolio document to find their username
-          const q = query(collection(db, "portfolios"), where("ownerUid", "==", user.uid));
-          const querySnapshot = await getDocs(q);
+          const portfolioData = await getPortfolioByOwnerUid(user.uid);
 
-          if (!querySnapshot.empty) {
-            const portfolioDoc = querySnapshot.docs[0];
-            const pData = portfolioDoc.data();
-            
+          if (portfolioData) {
             localStorage.setItem("userLoggedIn", "true");
             localStorage.setItem("userEmail", email);
-            localStorage.setItem("username", pData.username || "johndoe");
-            localStorage.setItem("displayName", pData.displayName || "John Doe");
-            localStorage.setItem("portfolio_data", JSON.stringify(pData));
-            
+            localStorage.setItem("username", portfolioData.username || "johndoe");
+            localStorage.setItem("displayName", portfolioData.displayName || "John Doe");
+            localStorage.setItem("portfolio_data", JSON.stringify(portfolioData));
+
             router.push("/dashboard");
           } else {
-            // Logged in but has no portfolio document yet (shouldn't happen under normal circumstances)
+            // Logged in but has no portfolio document yet
             localStorage.setItem("userLoggedIn", "true");
             localStorage.setItem("userEmail", email);
             localStorage.setItem("username", "johndoe");
@@ -111,6 +112,119 @@ export default function LoginPage() {
       localStorage.setItem("userEmail", "guest@freecard.co");
       router.push("/dashboard");
     }, 800);
+  };
+
+  const handleGoogleLogin = async () => {
+    setError("");
+    setIsLoading(true);
+    if (isFirebaseConfigured && auth && db) {
+      try {
+        const provider = new GoogleAuthProvider();
+        const result = await signInWithPopup(auth, provider);
+        const user = result.user;
+
+        if (!user.email || !user.email.toLowerCase().endsWith("@gmail.com")) {
+          await auth.signOut();
+          setError("Registration and login are restricted to @gmail.com email addresses only.");
+          setIsLoading(false);
+          return;
+        }
+
+        let portfolioUsername = "";
+        let displayName = user.displayName || "Google Creator";
+
+        // Check if returning user already has a portfolio
+        const existingPortfolio = await getPortfolioByOwnerUid(user.uid);
+
+        if (existingPortfolio) {
+          portfolioUsername = existingPortfolio.username;
+          displayName = existingPortfolio.displayName || displayName;
+          localStorage.setItem("portfolio_data", JSON.stringify(existingPortfolio));
+        } else {
+          // First-time Google login — generate username and create profile
+          const baseName = (user.displayName || user.email!.split("@")[0])
+            .toLowerCase()
+            .replace(/[^a-zA-Z0-9_]/g, "");
+
+          let candidate = baseName.substring(0, 10);
+          if (candidate.length < 3) candidate = "user_" + Math.floor(Math.random() * 100);
+
+          // Try to verify username uniqueness; fall back to a random suffix if offline
+          portfolioUsername = candidate;
+          try {
+            let isTaken = true;
+            let attempt = 0;
+            while (isTaken && attempt < 5) {
+              const checkRef = doc(db, "portfolios", portfolioUsername);
+              const checkSnap = await getDoc(checkRef);
+              if (!checkSnap.exists()) {
+                isTaken = false;
+              } else {
+                attempt++;
+                portfolioUsername = candidate + Math.floor(Math.random() * 100);
+              }
+            }
+          } catch {
+            // Offline — append a random suffix to minimize collision risk
+            portfolioUsername = candidate + "_" + Math.floor(Math.random() * 9000 + 1000);
+          }
+
+          const defaultPortfolio = {
+            username: portfolioUsername,
+            displayName,
+            bio: "Full Stack Engineer & Digital Creator 🚀 Designing the future of link interfaces.",
+            avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${displayName}`,
+            themeId: "glassmorphism",
+            fontId: "font-sans",
+            buttonShapeId: "rounded-full",
+            layoutId: "classic",
+            hiddenSocials: [],
+            bioAnimationId: "typewriter",
+            ownerUid: user.uid,
+            socials: { email: user.email },
+            links: [
+              {
+                id: "1",
+                title: "My Personal Website 🌐",
+                url: "https://example.com",
+                visible: true,
+                icon: "globe",
+              },
+            ],
+          };
+
+          // Save to localStorage immediately (works offline)
+          localStorage.setItem("portfolio_data", JSON.stringify(defaultPortfolio));
+          // Try Firestore — if offline, persistence layer will sync when back online
+          try {
+            await setDoc(doc(db, "portfolios", portfolioUsername), defaultPortfolio);
+          } catch {
+            console.warn("Firestore write deferred (offline) — data saved to localStorage");
+          }
+        }
+
+        localStorage.setItem("userLoggedIn", "true");
+        localStorage.setItem("userEmail", user.email!);
+        localStorage.setItem("username", portfolioUsername);
+        localStorage.setItem("displayName", displayName);
+
+        router.push("/dashboard");
+      } catch (err: any) {
+        console.error("Google Sign-In Error:", err);
+        setError(err.message || "Google Sign-In failed. Please try again.");
+        setIsLoading(false);
+      }
+    } else {
+      // Mock mode
+      setTimeout(() => {
+        setIsLoading(false);
+        localStorage.setItem("userLoggedIn", "true");
+        localStorage.setItem("userEmail", "googleuser@gmail.com");
+        localStorage.setItem("username", "google_creator");
+        localStorage.setItem("displayName", "Google Creator Mock");
+        router.push("/dashboard");
+      }, 1000);
+    }
   };
 
   return (
@@ -291,7 +405,8 @@ export default function LoginPage() {
               <GithubIcon className="size-3.5" />
               Github
             </button>
-            <button
+             <button
+              onClick={handleGoogleLogin}
               className="h-9 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-55 hover:text-zinc-950 dark:hover:bg-zinc-900 dark:hover:text-zinc-50 text-xs font-medium flex items-center justify-center gap-1.5 transition-all active:scale-[0.98]"
               disabled={isLoading}
             >
